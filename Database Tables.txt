@@ -1,0 +1,3 @@
+create table users(user_id serial primary key, username varchar(50) unique not null, password varchar(50) not null)
+
+create table items(id serial primary key, name varchar(50) not null, category varchar(50), owner integer references users(user_id),image varchar(50),description text,added timestamp not null)

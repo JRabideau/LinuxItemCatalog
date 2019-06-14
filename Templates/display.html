@@ -1,0 +1,32 @@
+<html>
+<head>
+<title>{{i.name}}</title>
+</head>
+<body>
+
+<a href = "/homepage">Home </a><a href = "/addItem">Add Item </a>
+
+{% if "username" in q %}
+<a href = "/logout">log out</a><br>
+
+{% else %}
+<a href = "/login">log in</a><br>
+{% endif %}
+
+
+Item name: {{i.name}}<br>
+Category: {{i.category}}<br>
+<br>
+Description: {{i.description}}<br>
+
+<a href="/edit/{{i.id}}">Edit</a>|<a href="/delete/{{i.id}}">Delete</a>
+
+
+
+
+
+
+
+
+</body>
+</html>

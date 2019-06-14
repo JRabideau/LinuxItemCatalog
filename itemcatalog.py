@@ -1,0 +1,324 @@
+from flask import Flask
+from flask import render_template, request, url_for, redirect
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, scoped_session
+from catalogdatabasesetup import Base, User, Item
+import random
+import string
+from itsdangerous import (TimedJSONWebSignatureSerializer as Serializer)
+from itsdangerous import BadSignature
+from itsdangerous import SignatureExpired
+from passlib.apps import custom_app_context as pwd_context
+from sqlalchemy import Column, Integer, String, desc
+from flask import Flask
+from flask import session as login_session
+from flask import jsonify
+from flask_httpauth import HTTPBasicAuth
+
+
+from oauth2client.client import flow_from_clientsecrets
+from oauth2client.client import FlowExchangeError
+
+import httplib2
+import json
+from flask import make_response
+import requests
+app = Flask(__name__)
+
+CLIENT_ID = json.loads(
+    open('client_secrets.json', 'r').read())['web']['client_id']
+APPLICATION_NAME = "Rabideau Item Catalog"
+
+
+auth = HTTPBasicAuth()
+
+app.secret_key = "test"
+engine = create_engine(
+    'sqlite:///CatalogWithUsers.db', connect_args={'check_same_thread': False})
+Base.metadata.bind = engine
+DBSession = sessionmaker(bind=engine)
+session = DBSession()
+place = 'https://accounts.google.com/o/oauth2/revoke?token=%s'
+menu = """
+
+
+<table>
+<tr>
+<td>
+<div align = 'left'>
+<a href = '/category/Video_Game'>Video Games</a><br>
+<a href = '/category/Book'>Books</a><br>
+<a href = '/category/Movie'>Movies</a><br>
+<a href = '/category/Plush'>Plushes</a><br>
+<a href = '/category/Action_Figure'>Action Figures</a><br>
+<a href = '/category/Clothes'>Clothes</a><br>
+<a href = '/category/Poster'>Posters</a><br>
+<a href = '/category/Art_Supply'>Art Supplies</a><br>
+<a href = '/category/Electronic'>Electronics</a><br>
+<a href = '/category/Misc'>Misc</a><br>
+</div>
+</td>
+
+
+<td>
+
+"""
+
+
+@app.route('/')
+@app.route('/homepage')
+def HomePage():
+    h = " "
+    # Check to see if we are logged in.
+    if 'username' in login_session:
+        h = h + "<a href = '/addItem'> Add Item</a>"
+        h = h + "<a href = '/logout'> Log Out</a>"
+    else:
+        h = h + "  <a href = '/login'> Log In</a>"
+    # Get the latest items and display them using table for formatting
+    h = h + menu
+    q = session.query(Item).order_by(Item.id.desc()).all()
+    for x in q:
+        h = h + ("<a href = '/display/" + str(x.id) + "'>" + x.name + "</a>")
+        h = h + "<br>"
+    h = h + "</td></tr></table>"
+    return str(h)
+
+
+@app.route('/users')
+def Users():
+
+    q = session.query(User).all()
+    h = " "
+    for x in q:
+        h = h + (x.name + " " + str(x.id) + "<br>")
+    return str(h)
+
+# Create anti-forgery state token
+
+
+@app.route('/login')
+def showLogin():
+    state = ''.join(random.choice(string.ascii_uppercase + string.digits)
+                    for x in range(32))
+    login_session['state'] = state
+    return render_template('signin.html', STATE=state)
+
+
+@app.route('/gconnect', methods=['POST'])
+def gconnect():
+    # Validate state token
+    if request.args.get('state') != login_session['state']:
+        response = make_response(json.dumps('Invalid state parameter.'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    # Obtain authorization code
+    code = request.data
+
+    try:
+        # Upgrade the authorization code into a credentials object
+        oauth_flow = flow_from_clientsecrets('client_secrets.json', scope='')
+        oauth_flow.redirect_uri = 'postmessage'
+        credentials = oauth_flow.step2_exchange(code)
+    except FlowExchangeError:
+        response = make_response(
+            json.dumps('Failed to upgrade the authorization code.'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Check that the access token is valid.
+    access_token = credentials.access_token
+    url = ('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=%s'
+           % access_token)
+    h = httplib2.Http()
+    result = json.loads(h.request(url, 'GET')[1])
+    # If there was an error in the access token info, abort.
+    if result.get('error') is not None:
+        response = make_response(json.dumps(result.get('error')), 500)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Verify that the access token is used for the intended user.
+    gplus_id = credentials.id_token['sub']
+    if result['user_id'] != gplus_id:
+        response = make_response(
+            json.dumps("Token's user ID doesn't match given user ID."), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Verify that the access token is valid for this app.
+    if result['issued_to'] != CLIENT_ID:
+        response = make_response(
+            json.dumps("Token's client ID does not match app's."), 401)
+        print("Token's client ID does not match app's.")
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    stored_access_token = login_session.get('access_token')
+    stored_gplus_id = login_session.get('gplus_id')
+    if stored_access_token is not None and gplus_id == stored_gplus_id:
+        response = make_response
+        (json.dumps('Current user is already connected.'), 200)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+    # Store the access token in the session for later use.
+    login_session['access_token'] = credentials.access_token
+    login_session['gplus_id'] = gplus_id
+
+    # Get user info
+    userinfo_url = "https://www.googleapis.com/oauth2/v1/userinfo"
+    params = {'access_token': credentials.access_token, 'alt': 'json'}
+    answer = requests.get(userinfo_url, params=params)
+
+    data = answer.json()
+
+    login_session['username'] = data['name']
+    login_session['picture'] = data['picture']
+    login_session['email'] = data['email']
+
+    output = ''
+    output += '<h1>Welcome, '
+    output += login_session['username']
+    output += '!</h1>'
+    print("done!")
+    return output
+
+
+@app.route('/display/<int:item_id>/')
+def Display(item_id):
+    # Get Specific Item and display it
+    Display_item = session.query(Item).filter_by(id=item_id).one()
+
+    return render_template('display.html', i=Display_item, q=login_session)
+
+
+@app.route('/addItem', methods=['GET', 'POST'])
+def CreateNew():
+    # Check if they are logged in and send them to where they can if needed
+    if 'username' not in login_session:
+        return redirect('/login')
+
+        # Add new Item
+    if request.method == 'POST':
+        newItem = Item(
+                name=request.form['name'],
+                id=(session.query(Item).count()),
+                description=request.form['description'],
+                category=request.form['category'],
+                owner=login_session['email'])
+        session.add(newItem)
+        session.commit()
+        return 'complete'
+    else:
+        return render_template('addItem.html')
+
+
+@app.route('/edit/<int:item_id>', methods=['GET', 'POST'])
+def Edit(item_id):
+    # Check to see if we are logged in
+
+    if 'username' not in login_session:
+        return redirect('/login')
+
+    # bring up desired item and allow edit
+    editedItem = session.query(Item).filter_by(id=item_id).one()
+    # Check to see if user has authority to edit
+    if login_session['email'] != editedItem.owner:
+        return "You aren't authorized to take this action"
+
+    if request.method == 'POST':
+        if request.form['name']:
+            editedItem.name = request.form['name']
+        if request.form['description']:
+            editedItem.description = request.form['description']
+        if request.form['category']:
+            editedItem.category = request.form['category']
+
+        session.add(editedItem)
+        session.commit()
+
+    return render_template('Edit.html', i=editedItem)
+
+
+@app.route('/delete/<int:item_id>')
+def Delete(item_id):
+    # Check logged in
+    if 'username' not in login_session:
+        return redirect('/login')
+    DItem = session.query(Item).filter_by(id=item_id).one()
+    # Check to see if user has authority to delete
+    if login_session['email'] != DItem.owner:
+        return "You aren't authorized to take this action"
+
+    session.delete(DItem)
+    session.commit()
+
+    return "deletion complete <a href ='/homepage'>Return Home</a>"
+
+
+@app.route('/logout')
+@app.route('/gdisconnect')
+def gdisconnect():
+    access_token = login_session.get('access_token')
+    if access_token is None:
+        print('Access Token is None')
+        response = make_response(json.dumps('Current user not connected'), 401)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    print('In gdisconnect access token is %s', access_token)
+    print('User name is: ')
+    print(login_session['username'])
+    url = place % login_session['access_token']
+    h = httplib2.Http()
+    result = h.request(url, 'GET')[0]
+    print('result is ')
+    print(result)
+    if result['status'] == '200':
+        del login_session['access_token']
+        del login_session['gplus_id']
+        del login_session['username']
+        del login_session['email']
+        del login_session['picture']
+        response = make_response(json.dumps('Successfully disconnected.'), 200)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    else:
+        response = make_response(
+                     json.dumps('Failed to revoke token for given user.', 400))
+        response.headers['Content-Type'] = 'application/json'
+        return response
+
+
+@app.route('/category/<choice>')
+def List(choice):
+    # Bring up items in specific category
+    h = "<a href = '/addItem'> Add Item</a> <a href = '/homepage'>Home</a> "
+    if 'username' in login_session:
+        h = h + "  <a href = '/logout'> Log Out</a>"
+    else:
+        h = h + "  <a href = '/login'> Log In</a>"
+
+    q = session.query(Item).filter_by(category=choice).all()
+    h = h + menu
+    for x in q:
+        h = h + ("<a href = '/display/" + str(x.id) + "'>" + x.name + "</a>")
+        h = h + "<br>"
+
+    h = h + "</td></tr></table>"
+
+    return str(h)
+
+
+@app.route('/json/<int:item_id>')
+def Endpoint(item_id):
+    # Jsonify and display specific item's data
+    points = session.query(Item).filter_by(id=item_id).one()
+
+    return jsonify(points.serialize())
+
+
+if __name__ == '__main__':
+    app.debug = True
+
+    app.run(host='0.0.0.0', port=5000, use_reloader=False)
